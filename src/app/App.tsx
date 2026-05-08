@@ -62,12 +62,23 @@ function mapApiBoxToUiBox(
 }
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      return response.json() as Promise<T>;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
   }
 
-  return response.json() as Promise<T>;
+  throw lastError instanceof Error ? lastError : new Error("Request failed");
 }
 
 export default function App() {

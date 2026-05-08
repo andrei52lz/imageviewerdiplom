@@ -9,16 +9,10 @@ interface WelcomeScreenProps {
   theme: Theme;
 }
 
-const BACKGROUND_IMAGES = [
-  "/Image/1.jpg",
-  "/Image/2.jpg",
-  "/Image/3.jpg",
-  "/Image/4.jpg",
-  "/Image/5.jpg",
-  "/Image/6.jpg",
-  "/Image/7.jpg",
-  "/Image/8.jpg",
-];
+const BACKGROUND_IMAGES = Array.from(
+  { length: 8 },
+  (_, index) => `${import.meta.env.BASE_URL}Image/${index + 1}.jpg`
+);
 
 const DISPLAY_MS = 9000;
 const FADE_MS = 2500;

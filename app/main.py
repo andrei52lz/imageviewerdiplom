@@ -70,7 +70,12 @@ def start_api_process() -> Optional[subprocess.Popen]:
         command = [sys.executable, str(Path(__file__).resolve()), API_SERVER_ARG]
 
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    process = subprocess.Popen(command, creationflags=creation_flags)
+    process = subprocess.Popen(
+        command,
+        creationflags=creation_flags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     wait_for_api()
     return process
 
@@ -83,7 +88,7 @@ def is_api_available() -> bool:
         return False
 
 
-def wait_for_api(timeout_seconds: float = 8.0) -> None:
+def wait_for_api(timeout_seconds: float = 20.0) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         if is_api_available():

@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+pillow
+pydantic
+PySide6
+pyinstaller

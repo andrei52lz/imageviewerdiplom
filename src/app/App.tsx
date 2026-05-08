@@ -6,6 +6,14 @@ import { SettingsSidebar } from "./components/SettingsSidebar";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { VisionKitIcon } from "./components/VisionKitIcon";
 import { Button } from "./components/ui/button";
+import type {
+  ApiBox,
+  FolderSelectionResponse,
+  LabelResponse,
+  MetricsResult,
+  Theme,
+  UiBoundingBox,
+} from "./types";
 import {
   FolderOpen,
   Target,
@@ -18,15 +26,7 @@ import {
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 
-type UiBoundingBox = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
-  color: string;
-  type: "ground-truth" | "prediction";
-};
+const API_BASE_URL = "http://127.0.0.1:8000";
 
 // Default class colors
 const DEFAULT_CLASS_COLORS: Record<string, string> = {
@@ -41,6 +41,35 @@ const DEFAULT_CLASS_COLORS: Record<string, string> = {
   DontCare: "#6B7280",
 };
 
+function getPathStem(path: string) {
+  return path.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+}
+
+function mapApiBoxToUiBox(
+  box: ApiBox,
+  type: UiBoundingBox["type"],
+  classColors: Record<string, string>
+): UiBoundingBox {
+  return {
+    x: box.x1,
+    y: box.y1,
+    width: box.x2 - box.x1,
+    height: box.y2 - box.y1,
+    label: `${box.label} (${type === "ground-truth" ? "GT" : "Pred"})`,
+    color: classColors[box.label] || "#FFFFFF",
+    type,
+  };
+}
+
+async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(url, options);
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export default function App() {
   const [showWelcome, setShowWelcome] = useState(true);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -49,12 +78,15 @@ export default function App() {
   const [groundTruthLoaded, setGroundTruthLoaded] = useState(false);
   const [predictionsLoaded, setPredictionsLoaded] = useState(false);
   const [metricsCalculated, setMetricsCalculated] = useState(false);
+  const [metricsLoading, setMetricsLoading] = useState(false);
 
   const [imagePaths, setImagePaths] = useState<string[]>([]);
   const [groundTruthFiles, setGroundTruthFiles] = useState<string[]>([]);
   const [boundingBoxes, setBoundingBoxes] = useState<UiBoundingBox[]>([]);
+  const [predictionFiles, setPredictionFiles] = useState<string[]>([]);
+  const [metricsResult, setMetricsResult] = useState<MetricsResult | null>(null);
 
-  const [theme, setTheme] = useState<"light" | "dark">("dark");
+  const [theme, setTheme] = useState<Theme>("dark");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const [classColors, setClassColors] = useState<Record<string, string>>(
@@ -63,73 +95,61 @@ export default function App() {
 
   useEffect(() => {
     const loadBoxesForCurrentImage = async () => {
-      if (
-        !groundTruthLoaded ||
-        imagePaths.length === 0 ||
-        groundTruthFiles.length === 0
-      ) {
+      if (imagePaths.length === 0) {
         setBoundingBoxes([]);
         return;
       }
 
       const currentImagePath = imagePaths[currentImageIndex];
-      const imageName = currentImagePath
-        .split(/[/\\]/)
-        .pop()
-        ?.replace(/\.[^.]+$/, "");
+      const imageStem = getPathStem(currentImagePath);
+      const allBoxes: UiBoundingBox[] = [];
 
-      const matchedLabelPath = groundTruthFiles.find((filePath) => {
-        const fileName = filePath
-          .split(/[/\\]/)
-          .pop()
-          ?.replace(/\.[^.]+$/, "");
-        return fileName === imageName;
-      });
-
-      if (!matchedLabelPath) {
-        setBoundingBoxes([]);
-        return;
-      }
-
-      try {
-        const res = await fetch(
-          `http://127.0.0.1:8000/read-kitti-label?path=${encodeURIComponent(
-            matchedLabelPath
-          )}`
+      if (groundTruthLoaded) {
+        const matchedGtPath = groundTruthFiles.find(
+          (filePath) => getPathStem(filePath) === imageStem
         );
 
-        if (!res.ok) {
-          setBoundingBoxes([]);
-          return;
+        if (matchedGtPath) {
+          const data = await requestJson<LabelResponse>(
+            `${API_BASE_URL}/read-kitti-label?path=${encodeURIComponent(matchedGtPath)}`
+          );
+          allBoxes.push(
+            ...data.boxes.map((box) => mapApiBoxToUiBox(box, "ground-truth", classColors))
+          );
         }
+      }
 
-        const data = await res.json();
-
-        const mappedBoxes: UiBoundingBox[] = (data.boxes || []).map(
-          (box: any) => ({
-            x: box.x1,
-            y: box.y1,
-            width: box.x2 - box.x1,
-            height: box.y2 - box.y1,
-            label: `${box.label} (GT)`,
-            color: classColors[box.label] || "#FFFFFF",
-            type: "ground-truth",
-          })
+      if (predictionsLoaded) {
+        const matchedPredPath = predictionFiles.find(
+          (filePath) => getPathStem(filePath) === imageStem
         );
 
-        setBoundingBoxes(mappedBoxes);
-      } catch (error) {
-        console.error(error);
-        setBoundingBoxes([]);
+        if (matchedPredPath) {
+          const data = await requestJson<LabelResponse>(
+            `${API_BASE_URL}/read-yolo-label?label_path=${encodeURIComponent(
+              matchedPredPath
+            )}&image_path=${encodeURIComponent(currentImagePath)}`
+          );
+          allBoxes.push(
+            ...data.boxes.map((box) => mapApiBoxToUiBox(box, "prediction", classColors))
+          );
+        }
       }
+
+      setBoundingBoxes(allBoxes);
     };
 
-    loadBoxesForCurrentImage();
+    loadBoxesForCurrentImage().catch(() => {
+      setBoundingBoxes([]);
+      toast.error("Ошибка загрузки bbox для текущего изображения");
+    });
   }, [
     currentImageIndex,
     imagePaths,
     groundTruthFiles,
+    predictionFiles,
     groundTruthLoaded,
+    predictionsLoaded,
     classColors,
   ]);
 
@@ -140,33 +160,16 @@ export default function App() {
 
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        handlePrevious();
+        setCurrentImageIndex((prev) => Math.max(prev - 1, 0));
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        handleNext();
+        setCurrentImageIndex((prev) => Math.min(prev + 1, imagePaths.length - 1));
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [imagesLoaded, currentImageIndex, imagePaths]);
-
-  // Mock metrics
-  const classMetrics = [
-    { className: "Car", iou: 0.87, color: classColors.Car },
-    {
-      className: "Pedestrian",
-      iou: 0.82,
-      color: classColors.Pedestrian,
-    },
-    {
-      className: "Cyclist",
-      iou: 0.79,
-      color: classColors.Cyclist,
-    },
-    { className: "Van", iou: 0.65, color: classColors.Van },
-    { className: "Truck", iou: 0.71, color: classColors.Truck },
-  ];
 
   const legendItems = Object.entries(classColors).map(
     ([label, color]) => ({
@@ -181,9 +184,11 @@ export default function App() {
       setGroundTruthLoaded(false);
       setPredictionsLoaded(false);
       setMetricsCalculated(false);
+      setMetricsResult(null);
 
       setImagePaths([]);
       setGroundTruthFiles([]);
+      setPredictionFiles([]);
       setBoundingBoxes([]);
       setCurrentImageIndex(0);
 
@@ -192,8 +197,9 @@ export default function App() {
     }
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/select-image-folder");
-      const data = await res.json();
+      const data = await requestJson<FolderSelectionResponse>(
+        `${API_BASE_URL}/select-image-folder`
+      );
 
       if (!data.count || data.count === 0) {
         toast.info("Папка не выбрана или не содержит изображений");
@@ -202,6 +208,7 @@ export default function App() {
 
       setImagePaths(data.files);
       setGroundTruthFiles([]);
+      setPredictionFiles([]);
       setBoundingBoxes([]);
       setCurrentImageIndex(0);
 
@@ -209,12 +216,12 @@ export default function App() {
       setGroundTruthLoaded(false);
       setPredictionsLoaded(false);
       setMetricsCalculated(false);
+      setMetricsResult(null);
 
       toast.success("Изображения загружены успешно", {
         description: `Найдено изображений: ${data.count}`,
       });
     } catch (error) {
-      console.error(error);
       toast.error("Ошибка подключения к Python");
     }
   };
@@ -228,6 +235,7 @@ export default function App() {
     if (groundTruthLoaded) {
       setGroundTruthLoaded(false);
       setMetricsCalculated(false);
+      setMetricsResult(null);
       setGroundTruthFiles([]);
       setBoundingBoxes([]);
       toast.info("Ground truth выгружен");
@@ -235,8 +243,9 @@ export default function App() {
     }
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/select-gt-folder");
-      const data = await res.json();
+      const data = await requestJson<FolderSelectionResponse>(
+        `${API_BASE_URL}/select-gt-folder`
+      );
 
       if (!data.count || data.count === 0) {
         toast.info("Папка не выбрана или не содержит txt-файлов");
@@ -245,17 +254,18 @@ export default function App() {
 
       setGroundTruthFiles(data.files);
       setGroundTruthLoaded(true);
+      setMetricsCalculated(false);
+      setMetricsResult(null);
 
       toast.success("Ground truth загружен", {
         description: `Файлов аннотаций: ${data.count}`,
       });
     } catch (error) {
-      console.error(error);
       toast.error("Ошибка загрузки Ground Truth");
     }
   };
 
-  const handleLoadPredictions = () => {
+  const handleLoadPredictions = async () => {
     if (!imagesLoaded) {
       toast.error("Сначала загрузите изображения");
       return;
@@ -264,16 +274,37 @@ export default function App() {
     if (predictionsLoaded) {
       setPredictionsLoaded(false);
       setMetricsCalculated(false);
+      setMetricsResult(null);
+      setPredictionFiles([]);
+      setBoundingBoxes([]);
       toast.info("Предсказания выгружены");
-    } else {
+      return;
+    }
+
+    try {
+      const data = await requestJson<FolderSelectionResponse>(
+        `${API_BASE_URL}/select-pred-folder`
+      );
+
+      if (!data.count || data.count === 0) {
+        toast.info("Папка не выбрана или не содержит txt-файлов");
+        return;
+      }
+
+      setPredictionFiles(data.files);
       setPredictionsLoaded(true);
+      setMetricsCalculated(false);
+      setMetricsResult(null);
+
       toast.success("Предсказания загружены", {
-        description: "Предсказания сети загружены успешно",
+        description: `Файлов предсказаний: ${data.count}`,
       });
+    } catch (error) {
+      toast.error("Ошибка загрузки Predictions");
     }
   };
 
-  const handleCalculateMetrics = () => {
+  const handleCalculateMetrics = async () => {
     if (!groundTruthLoaded || !predictionsLoaded) {
       toast.error("Сначала загрузите ground truth и предсказания");
       return;
@@ -281,12 +312,38 @@ export default function App() {
 
     if (metricsCalculated) {
       setMetricsCalculated(false);
+      setMetricsResult(null);
       toast.info("Метрики сброшены");
-    } else {
+      return;
+    }
+
+    setMetricsLoading(true);
+
+    try {
+      const data = await requestJson<MetricsResult>(`${API_BASE_URL}/calculate-metrics`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          image_paths: imagePaths,
+          gt_files: groundTruthFiles,
+          pred_files: predictionFiles,
+          iou_threshold: 0.5,
+        }),
+      });
+
+      setMetricsResult(data);
       setMetricsCalculated(true);
       toast.success("Метрики рассчитаны", {
-        description: "IoU и mAP вычислены для всех классов",
+        description: "mAP@0.5, Precision, Recall и IoU вычислены для всех классов",
       });
+    } catch (error) {
+      setMetricsCalculated(false);
+      setMetricsResult(null);
+      toast.error("Ошибка расчета метрик");
+    } finally {
+      setMetricsLoading(false);
     }
   };
 
@@ -412,7 +469,7 @@ export default function App() {
                 <ImageViewer
                   imageUrl={
                     imagePaths[currentImageIndex]
-                      ? `http://127.0.0.1:8000/image-file?path=${encodeURIComponent(
+                      ? `${API_BASE_URL}/image-file?path=${encodeURIComponent(
                           imagePaths[currentImageIndex]
                         )}`
                       : ""
@@ -502,10 +559,10 @@ export default function App() {
                     onClick={handleCalculateMetrics}
                     variant={metricsCalculated ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!groundTruthLoaded || !predictionsLoaded}
+                    disabled={!groundTruthLoaded || !predictionsLoaded || metricsLoading}
                   >
                     <BarChart3 className="w-4 h-4" />
-                    Рассчитать метрики
+                    {metricsLoading ? "Расчет метрик..." : "Рассчитать метрики"}
                   </Button>
                 </div>
 
@@ -542,10 +599,10 @@ export default function App() {
 
           {/* Right Column - Metrics */}
           <div>
-            {metricsCalculated ? (
+            {metricsCalculated && metricsResult ? (
               <MetricsPanel
-                classMetrics={classMetrics}
-                mAP={0.768}
+                metrics={metricsResult}
+                classColors={classColors}
                 theme={theme}
               />
             ) : (

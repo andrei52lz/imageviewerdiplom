@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Settings, Moon, Sun, X, LogOut, Palette } from 'lucide-react';
+import { Settings, Moon, Sun, X, LogOut, Palette, Info } from 'lucide-react';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
 import { Separator } from './ui/separator';
 import { ColorPickerModal } from './ColorPickerModal';
+import { AboutModal } from './AboutModal';
 
 interface SettingsSidebarProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export function SettingsSidebar({
   onExitToWelcome 
 }: SettingsSidebarProps) {
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   if (!isOpen) return null;
 
@@ -145,6 +147,16 @@ export function SettingsSidebar({
 
           <Separator className={theme === 'dark' ? 'bg-zinc-800' : 'bg-gray-200'} />
 
+          {/* About Button */}
+          <Button
+            variant="outline"
+            className="w-full flex items-center justify-center gap-2"
+            onClick={() => setAboutOpen(true)}
+          >
+            <Info className="w-4 h-4" />
+            О приложении
+          </Button>
+
           {/* Exit Button */}
           <Button
             variant={theme === 'dark' ? 'outline' : 'outline'}
@@ -156,6 +168,14 @@ export function SettingsSidebar({
           </Button>
         </div>
       </div>
+
+      {/* About Modal */}
+      <AboutModal
+        isOpen={aboutOpen}
+        onClose={() => setAboutOpen(false)}
+        theme={theme}
+        classColors={classColors}
+      />
 
       {/* Color Picker Modal */}
       <ColorPickerModal

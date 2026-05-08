@@ -1,5 +1,12 @@
 node_modules/
 dist/
+build/
 __pycache__/
 *.pyc
 .env
+.venv/
+venv/
+.pytest_cache/
+runs/
+dataset/
+*.spec

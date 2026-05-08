@@ -1,19 +1,23 @@
 import React from 'react';
-
-interface ClassMetric {
-  className: string;
-  iou: number;
-  color: string;
-}
+import type { MetricsResult, Theme } from "../types";
 
 interface MetricsPanelProps {
-  classMetrics: ClassMetric[];
-  mAP: number;
-  theme?: 'light' | 'dark';
+  metrics: MetricsResult;
+  classColors: Record<string, string>;
+  theme?: Theme;
 }
 
-export function MetricsPanel({ classMetrics, mAP, theme = 'dark' }: MetricsPanelProps) {
-  const avgIoU = classMetrics.reduce((sum, m) => sum + m.iou, 0) / classMetrics.length;
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+export function MetricsPanel({ metrics, classColors, theme = 'dark' }: MetricsPanelProps) {
+  const metricCards = [
+    { label: 'mAP@0.5', value: formatPercent(metrics.mAP) },
+    { label: 'Precision', value: formatPercent(metrics.precision) },
+    { label: 'Recall', value: formatPercent(metrics.recall) },
+    { label: 'TP / FP / FN', value: `${metrics.tp} / ${metrics.fp} / ${metrics.fn}` },
+  ];
 
   return (
     <div className={`rounded-lg p-6 border ${
@@ -27,67 +31,66 @@ export function MetricsPanel({ classMetrics, mAP, theme = 'dark' }: MetricsPanel
 
       {/* Overall Metrics */}
       <div className="grid grid-cols-2 gap-4 mb-6">
-        <div className={`rounded-lg p-4 border ${
-          theme === 'dark'
-            ? 'bg-zinc-900 border-zinc-700'
-            : 'bg-gray-50 border-gray-200'
-        }`}>
-          <div className={`text-sm mb-1 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-            Средний IoU
+        {metricCards.map((card) => (
+          <div key={card.label} className={`rounded-lg p-4 border ${
+            theme === 'dark'
+              ? 'bg-zinc-900 border-zinc-700'
+              : 'bg-gray-50 border-gray-200'
+          }`}>
+            <div className={`text-sm mb-1 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
+              {card.label}
+            </div>
+            <div className={`text-2xl ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
+              {card.value}
+            </div>
           </div>
-          <div className={`text-2xl ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
-            {(avgIoU * 100).toFixed(2)}%
-          </div>
-        </div>
-        <div className={`rounded-lg p-4 border ${
-          theme === 'dark'
-            ? 'bg-zinc-900 border-zinc-700'
-            : 'bg-gray-50 border-gray-200'
-        }`}>
-          <div className={`text-sm mb-1 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-            mAP
-          </div>
-          <div className={`text-2xl ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
-            {(mAP * 100).toFixed(2)}%
-          </div>
-        </div>
+        ))}
       </div>
 
       {/* Per-Class Metrics */}
       <div>
         <h3 className={`text-sm mb-3 ${theme === 'dark' ? 'text-zinc-400' : 'text-gray-600'}`}>
-          IoU по классам
+          Метрики по классам
         </h3>
         <div className="space-y-3">
-          {classMetrics.map((metric, index) => (
-            <div key={index}>
-              <div className="flex justify-between items-center mb-1">
+          {metrics.classMetrics.map((metric) => {
+            const color = classColors[metric.className] || '#FFFFFF';
+
+            return (
+            <div
+              key={metric.className}
+              className={`rounded-lg border p-3 ${
+                theme === 'dark'
+                  ? 'bg-zinc-900 border-zinc-700'
+                  : 'bg-gray-50 border-gray-200'
+              }`}
+            >
+              <div className="flex justify-between items-center mb-3">
                 <div className="flex items-center gap-2">
                   <div
                     className="w-3 h-3 rounded"
-                    style={{ backgroundColor: metric.color }}
+                    style={{ backgroundColor: color }}
                   />
                   <span className={`text-sm ${theme === 'dark' ? 'text-white' : 'text-gray-900'}`}>
                     {metric.className}
                   </span>
                 </div>
                 <span className={`text-sm ${theme === 'dark' ? 'text-zinc-300' : 'text-gray-700'}`}>
-                  {(metric.iou * 100).toFixed(1)}%
+                  IoU {formatPercent(metric.iou)}
                 </span>
               </div>
-              <div className={`w-full rounded-full h-2 overflow-hidden ${
-                theme === 'dark' ? 'bg-zinc-700' : 'bg-gray-200'
+              <div className={`grid grid-cols-2 gap-x-4 gap-y-2 text-sm ${
+                theme === 'dark' ? 'text-zinc-300' : 'text-gray-700'
               }`}>
-                <div
-                  className="h-full rounded-full transition-all duration-300"
-                  style={{
-                    width: `${metric.iou * 100}%`,
-                    backgroundColor: metric.color,
-                  }}
-                />
+                <div>AP: {formatPercent(metric.ap)}</div>
+                <div>Precision: {formatPercent(metric.precision)}</div>
+                <div>Recall: {formatPercent(metric.recall)}</div>
+                <div>TP/FP/FN: {metric.tp}/{metric.fp}/{metric.fn}</div>
+                <div>GT: {metric.gtCount}</div>
+                <div>Predictions: {metric.predCount}</div>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </div>
     </div>

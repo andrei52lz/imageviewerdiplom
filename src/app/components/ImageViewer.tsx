@@ -1,19 +1,10 @@
 import React, { useRef, useEffect } from "react";
-
-interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  label: string;
-  color: string;
-  type: "ground-truth" | "prediction";
-}
+import type { Theme, UiBoundingBox } from "../types";
 
 interface ImageViewerProps {
   imageUrl: string;
-  boundingBoxes: BoundingBox[];
-  theme?: "light" | "dark";
+  boundingBoxes: UiBoundingBox[];
+  theme?: Theme;
 }
 
 export function ImageViewer({

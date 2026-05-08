@@ -1,11 +1,17 @@
 from pathlib import Path
 from tkinter import Tk, filedialog
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-api = FastAPI()
+from .detection_metrics import calculate_detection_metrics
+from .label_io import IMAGE_EXTENSIONS, box_to_dict, list_files, read_kitti_boxes, read_yolo_boxes
+from .schemas import CalculateMetricsRequest
+
+
+api = FastAPI(title="VisionKit API")
 
 api.add_middleware(
     CORSMiddleware,
@@ -18,46 +24,20 @@ api.add_middleware(
     allow_headers=["*"],
 )
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
-
 
 @api.get("/ping")
 def ping():
-    return {"message": "pong from python"}
+    return {"message": "pong from VisionKit API"}
 
 
 @api.get("/select-image-folder")
 def select_image_folder():
-    root = Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
+    folder = ask_directory("Выберите папку с изображениями")
+    if folder is None:
+        return empty_folder_response()
 
-    folder_path = filedialog.askdirectory(title="Выберите папку с изображениями")
-
-    root.destroy()
-
-    if not folder_path:
-        return {
-            "count": 0,
-            "files": [],
-            "folder": None,
-        }
-
-    folder = Path(folder_path)
-
-    files = sorted(
-        [
-            str(p)
-            for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        ]
-    )
-
-    return {
-        "count": len(files),
-        "files": files,
-        "folder": str(folder),
-    }
+    files = list_files(folder, IMAGE_EXTENSIONS)
+    return {"count": len(files), "files": files, "folder": str(folder)}
 
 
 @api.get("/image-file")
@@ -65,7 +45,7 @@ def image_file(path: str):
     file_path = Path(path)
 
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="Image file not found")
 
     if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported image type")
@@ -75,36 +55,12 @@ def image_file(path: str):
 
 @api.get("/select-gt-folder")
 def select_gt_folder():
-    root = Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
+    folder = ask_directory("Выберите папку с Ground Truth")
+    if folder is None:
+        return empty_folder_response()
 
-    folder_path = filedialog.askdirectory(title="Выберите папку с Ground Truth")
-
-    root.destroy()
-
-    if not folder_path:
-      return {
-          "count": 0,
-          "files": [],
-          "folder": None,
-      }
-
-    folder = Path(folder_path)
-
-    txt_files = sorted(
-        [
-            str(p)
-            for p in folder.iterdir()
-            if p.is_file() and p.suffix.lower() == ".txt"
-        ]
-    )
-
-    return {
-        "count": len(txt_files),
-        "files": txt_files,
-        "folder": str(folder),
-    }
+    files = list_files(folder, {".txt"})
+    return {"count": len(files), "files": files, "folder": str(folder)}
 
 
 @api.get("/read-kitti-label")
@@ -112,38 +68,65 @@ def read_kitti_label(path: str):
     file_path = Path(path)
 
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Label file not found")
+        raise HTTPException(status_code=404, detail="KITTI label file not found")
 
-    lines = file_path.read_text(encoding="utf-8").splitlines()
-    boxes = []
-
-    for line in lines:
-        parts = line.strip().split()
-        if len(parts) < 8:
-            continue
-
-        class_name = parts[0]
-
-        try:
-            x1 = float(parts[4])
-            y1 = float(parts[5])
-            x2 = float(parts[6])
-            y2 = float(parts[7])
-        except ValueError:
-            continue
-
-        boxes.append(
-            {
-                "label": class_name,
-                "x1": x1,
-                "y1": y1,
-                "x2": x2,
-                "y2": y2,
-            }
-        )
-
+    boxes = read_kitti_boxes(file_path)
     return {
         "count": len(boxes),
-        "boxes": boxes,
+        "boxes": [box_to_dict(box) for box in boxes],
         "file": str(file_path),
     }
+
+
+@api.get("/select-pred-folder")
+def select_pred_folder():
+    folder = ask_directory("Выберите папку с Predictions")
+    if folder is None:
+        return empty_folder_response()
+
+    files = list_files(folder, {".txt"})
+    return {"count": len(files), "files": files, "folder": str(folder)}
+
+
+@api.get("/read-yolo-label")
+def read_yolo_label(label_path: str, image_path: str):
+    label_file = Path(label_path)
+    image_file = Path(image_path)
+
+    if not label_file.exists() or not label_file.is_file():
+        raise HTTPException(status_code=404, detail="YOLO label file not found")
+
+    if not image_file.exists() or not image_file.is_file():
+        raise HTTPException(status_code=404, detail="Image file not found")
+
+    boxes = read_yolo_boxes(label_file, image_file)
+    return {
+        "count": len(boxes),
+        "boxes": [box_to_dict(box) for box in boxes],
+    }
+
+
+@api.post("/calculate-metrics")
+def calculate_metrics(request: CalculateMetricsRequest):
+    if not 0 <= request.iou_threshold <= 1:
+        raise HTTPException(status_code=400, detail="iou_threshold must be between 0 and 1")
+
+    return calculate_detection_metrics(request)
+
+
+def ask_directory(title: str) -> Optional[Path]:
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+
+    folder_path = filedialog.askdirectory(title=title)
+    root.destroy()
+
+    if not folder_path:
+        return None
+
+    return Path(folder_path)
+
+
+def empty_folder_response():
+    return {"count": 0, "files": [], "folder": None}

@@ -15,11 +15,8 @@ api = FastAPI(title="VisionKit API")
 
 api.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -31,7 +28,7 @@ def ping():
 
 
 @api.get("/select-image-folder")
-def select_image_folder():
+async def select_image_folder():
     folder = ask_directory("Выберите папку с изображениями")
     if folder is None:
         return empty_folder_response()
@@ -54,7 +51,7 @@ def image_file(path: str):
 
 
 @api.get("/select-gt-folder")
-def select_gt_folder():
+async def select_gt_folder():
     folder = ask_directory("Выберите папку с Ground Truth")
     if folder is None:
         return empty_folder_response()
@@ -79,7 +76,7 @@ def read_kitti_label(path: str):
 
 
 @api.get("/select-pred-folder")
-def select_pred_folder():
+async def select_pred_folder():
     folder = ask_directory("Выберите папку с Predictions")
     if folder is None:
         return empty_folder_response()
@@ -115,12 +112,23 @@ def calculate_metrics(request: CalculateMetricsRequest):
 
 
 def ask_directory(title: str) -> Optional[Path]:
-    root = Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
+    root = None
 
-    folder_path = filedialog.askdirectory(title=title)
-    root.destroy()
+    try:
+        root = Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+
+        folder_path = filedialog.askdirectory(parent=root, title=title)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Directory picker failed: {exc}",
+        ) from exc
+    finally:
+        if root is not None:
+            root.destroy()
 
     if not folder_path:
         return None

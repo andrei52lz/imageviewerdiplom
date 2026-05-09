@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { ImageViewer } from "./components/ImageViewer";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { LegendPanel } from "./components/LegendPanel";
@@ -13,6 +13,7 @@ import type {
   FolderSelectionResponse,
   LabelResponse,
   MetricsResult,
+  PythonDebugStatus,
   Theme,
   UiBoundingBox,
 } from "./types";
@@ -31,6 +32,8 @@ import { Toaster } from "./components/ui/sonner";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
 type ConnectionStatus = "checking" | "connected" | "disconnected";
+const REQUEST_TIMEOUT_MS = 10000;
+const IMAGE_EXTENSIONS = /\.(bmp|gif|jpe?g|png|webp)$/i;
 
 // Default class colors
 const DEFAULT_CLASS_COLORS: Record<string, string> = {
@@ -67,25 +70,76 @@ function mapApiBoxToUiBox(
 
 class ApiRequestError extends Error {
   status?: number;
+  category: string;
+  url?: string;
+  responseBody?: string;
 
-  constructor(message: string, status?: number) {
+  constructor(
+    message: string,
+    category: string,
+    status?: number,
+    url?: string,
+    responseBody?: string
+  ) {
     super(message);
     this.name = "ApiRequestError";
+    this.category = category;
     this.status = status;
+    this.url = url;
+    this.responseBody = responseBody;
   }
 }
 
-async function readErrorMessage(response: Response): Promise<string> {
+async function readResponseBody(response: Response): Promise<string> {
+  return response.text();
+}
+
+function parseJsonResponse<T>(body: string, url: string): T {
   try {
-    const data = (await response.json()) as { detail?: string };
+    return JSON.parse(body) as T;
+  } catch {
+    throw new ApiRequestError(
+      "invalid API response: backend returned non-JSON response",
+      "invalid_api_response",
+      undefined,
+      url,
+      body.slice(0, 1000)
+    );
+  }
+}
+
+function readErrorMessage(status: number, body: string): string {
+  try {
+    const data = JSON.parse(body) as { detail?: string; message?: string };
     if (data.detail) {
       return data.detail;
     }
+    if (data.message) {
+      return data.message;
+    }
   } catch {
-    // The response body is not JSON; use the HTTP status below.
+    if (body.trim()) {
+      return body.slice(0, 500);
+    }
   }
 
-  return `Request failed with status ${response.status}`;
+  return `internal server error: HTTP ${status}`;
+}
+
+function classifyFetchError(error: unknown) {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return "timeout: Python API did not respond in time";
+  }
+
+  if (error instanceof TypeError) {
+    if (!navigator.onLine) {
+      return "network offline: browser reports no network connection";
+    }
+
+    return "backend not running or connection refused/CORS blocked";
+  }
+
+  return getErrorMessage(error);
 }
 
 function getErrorMessage(error: unknown) {
@@ -100,24 +154,69 @@ async function requestJson<T>(url: string, options?: RequestInit, retries = 8): 
   let lastError: unknown;
 
   for (let attempt = 0; attempt < retries; attempt += 1) {
+    const startedAt = performance.now();
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
-      const response = await fetch(url, options);
+      console.info("[VisionKit API] request", {
+        url,
+        method: options?.method ?? "GET",
+        attempt: attempt + 1,
+      });
+
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      const body = await readResponseBody(response);
+      const durationMs = Math.round(performance.now() - startedAt);
+
+      console.info("[VisionKit API] response", {
+        url,
+        status: response.status,
+        durationMs,
+        body: body.slice(0, 1500),
+      });
+
       if (!response.ok) {
-        throw new ApiRequestError(await readErrorMessage(response), response.status);
+        throw new ApiRequestError(
+          readErrorMessage(response.status, body),
+          response.status >= 500 ? "internal_server_error" : "http_error",
+          response.status,
+          url,
+          body.slice(0, 1500)
+        );
       }
 
-      return response.json() as Promise<T>;
+      return parseJsonResponse<T>(body, url);
     } catch (error) {
+      const durationMs = Math.round(performance.now() - startedAt);
+      console.error("[VisionKit API] request failed", {
+        url,
+        method: options?.method ?? "GET",
+        attempt: attempt + 1,
+        durationMs,
+        error,
+      });
+
       if (error instanceof ApiRequestError) {
         throw error;
       }
 
       lastError = error;
       await new Promise((resolve) => window.setTimeout(resolve, 500));
+    } finally {
+      window.clearTimeout(timeout);
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("Request failed");
+  throw new ApiRequestError(
+    classifyFetchError(lastError),
+    "network_error",
+    undefined,
+    url
+  );
 }
 
 export default function App() {
@@ -135,18 +234,53 @@ export default function App() {
   const [boundingBoxes, setBoundingBoxes] = useState<UiBoundingBox[]>([]);
   const [predictionFiles, setPredictionFiles] = useState<string[]>([]);
   const [metricsResult, setMetricsResult] = useState<MetricsResult | null>(null);
+  const [localImageUrls, setLocalImageUrls] = useState<Record<string, string>>({});
+  const [usingLocalImageFallback, setUsingLocalImageFallback] = useState(false);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("checking");
   const [connectionMessage, setConnectionMessage] =
     useState("Проверка Python API...");
   const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
+  const [pythonDebugStatus, setPythonDebugStatus] =
+    useState<PythonDebugStatus | null>(null);
 
   const [theme, setTheme] = useState<Theme>("dark");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const localImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const [classColors, setClassColors] = useState<Record<string, string>>(
     DEFAULT_CLASS_COLORS
   );
+
+  const resetLoadedData = () => {
+    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
+    setLocalImageUrls({});
+    setUsingLocalImageFallback(false);
+    setImagesLoaded(false);
+    setGroundTruthLoaded(false);
+    setPredictionsLoaded(false);
+    setMetricsCalculated(false);
+    setMetricsResult(null);
+    setImagePaths([]);
+    setGroundTruthFiles([]);
+    setPredictionFiles([]);
+    setBoundingBoxes([]);
+    setCurrentImageIndex(0);
+  };
+
+  useEffect(() => {
+    const input = localImageInputRef.current;
+    if (!input) {
+      return;
+    }
+
+    input.setAttribute("webkitdirectory", "");
+    input.setAttribute("directory", "");
+  }, []);
+
+  useEffect(() => () => {
+    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
+  }, [localImageUrls]);
 
   const checkBackendConnection = async () => {
     setConnectionStatus((status) => {
@@ -159,13 +293,20 @@ export default function App() {
 
     try {
       const health = await requestJson<ApiHealth>(`${API_BASE_URL}/health`, undefined, 2);
+      const debug = await requestJson<PythonDebugStatus>(
+        `${API_BASE_URL}/api/debug/python`,
+        undefined,
+        1
+      );
       setApiHealth(health);
+      setPythonDebugStatus(debug);
       setConnectionStatus("connected");
       setConnectionMessage(
         `Python ${health.pythonVersion} подключен, PID ${health.pid}`
       );
     } catch (error) {
       setApiHealth(null);
+      setPythonDebugStatus(null);
       setConnectionStatus("disconnected");
       setConnectionMessage(`Python API недоступен: ${getErrorMessage(error)}`);
     }
@@ -182,7 +323,7 @@ export default function App() {
 
   useEffect(() => {
     const loadBoxesForCurrentImage = async () => {
-      if (imagePaths.length === 0) {
+      if (imagePaths.length === 0 || usingLocalImageFallback) {
         setBoundingBoxes([]);
         return;
       }
@@ -238,6 +379,7 @@ export default function App() {
     groundTruthLoaded,
     predictionsLoaded,
     classColors,
+    usingLocalImageFallback,
   ]);
 
   // Keyboard navigation
@@ -265,21 +407,57 @@ export default function App() {
     })
   );
 
+  const handleLocalImageSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+      .filter((file) => IMAGE_EXTENSIONS.test(file.name))
+      .sort((first, second) => first.name.localeCompare(second.name));
+
+    event.target.value = "";
+
+    if (files.length === 0) {
+      toast.info("Файлы изображений не выбраны");
+      return;
+    }
+
+    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
+
+    const urls: Record<string, string> = {};
+    const paths = files.map((file, index) => {
+      const key = `local://${index}-${file.name}`;
+      urls[key] = URL.createObjectURL(file);
+      return key;
+    });
+
+    setLocalImageUrls(urls);
+    setUsingLocalImageFallback(true);
+    setImagePaths(paths);
+    setGroundTruthFiles([]);
+    setPredictionFiles([]);
+    setBoundingBoxes([]);
+    setCurrentImageIndex(0);
+    setImagesLoaded(true);
+    setGroundTruthLoaded(false);
+    setPredictionsLoaded(false);
+    setMetricsCalculated(false);
+    setMetricsResult(null);
+
+    toast.success("Изображения загружены локально", {
+      description: `Python API недоступен. Найдено изображений: ${files.length}`,
+    });
+  };
+
   const handleLoadImages = async () => {
     if (imagesLoaded) {
-      setImagesLoaded(false);
-      setGroundTruthLoaded(false);
-      setPredictionsLoaded(false);
-      setMetricsCalculated(false);
-      setMetricsResult(null);
-
-      setImagePaths([]);
-      setGroundTruthFiles([]);
-      setPredictionFiles([]);
-      setBoundingBoxes([]);
-      setCurrentImageIndex(0);
-
+      resetLoadedData();
       toast.info("Изображения выгружены");
+      return;
+    }
+
+    if (connectionStatus !== "connected") {
+      localImageInputRef.current?.click();
+      toast.info("Python API недоступен", {
+        description: "Открыта локальная загрузка изображений без расчета bbox/метрик",
+      });
       return;
     }
 
@@ -293,6 +471,9 @@ export default function App() {
         return;
       }
 
+      Object.values(localImageUrls).forEach(URL.revokeObjectURL);
+      setLocalImageUrls({});
+      setUsingLocalImageFallback(false);
       setImagePaths(data.files);
       setGroundTruthFiles([]);
       setPredictionFiles([]);
@@ -310,8 +491,9 @@ export default function App() {
       });
     } catch (error) {
       await checkBackendConnection();
+      localImageInputRef.current?.click();
       toast.error("Ошибка подключения к Python", {
-        description: getErrorMessage(error),
+        description: `${getErrorMessage(error)}. Можно выбрать изображения локально без Python API.`,
       });
     }
   };
@@ -319,6 +501,13 @@ export default function App() {
   const handleLoadGroundTruth = async () => {
     if (!imagesLoaded) {
       toast.error("Сначала загрузите изображения");
+      return;
+    }
+
+    if (connectionStatus !== "connected" || usingLocalImageFallback) {
+      toast.error("Ground Truth требует Python API", {
+        description: "Сейчас доступна только локальная загрузка изображений без bbox/метрик",
+      });
       return;
     }
 
@@ -363,6 +552,13 @@ export default function App() {
       return;
     }
 
+    if (connectionStatus !== "connected" || usingLocalImageFallback) {
+      toast.error("Predictions требуют Python API", {
+        description: "Сейчас доступна только локальная загрузка изображений без bbox/метрик",
+      });
+      return;
+    }
+
     if (predictionsLoaded) {
       setPredictionsLoaded(false);
       setMetricsCalculated(false);
@@ -399,6 +595,13 @@ export default function App() {
   };
 
   const handleCalculateMetrics = async () => {
+    if (connectionStatus !== "connected" || usingLocalImageFallback) {
+      toast.error("Расчет метрик требует Python API", {
+        description: "Проверьте статус подключения и лог backend",
+      });
+      return;
+    }
+
     if (!groundTruthLoaded || !predictionsLoaded) {
       toast.error("Сначала загрузите ground truth и предсказания");
       return;
@@ -482,6 +685,14 @@ export default function App() {
       }`}
     >
       <Toaster theme={theme} />
+      <input
+        ref={localImageInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        className="hidden"
+        onChange={handleLocalImageSelection}
+      />
 
       {/* Settings Sidebar */}
       <SettingsSidebar
@@ -549,6 +760,9 @@ export default function App() {
               }`}
             >
               {connectionMessage}
+              {pythonDebugStatus?.lastError
+                ? ` Последняя ошибка: ${pythonDebugStatus.lastError.type}`
+                : ""}
             </span>
           </div>
 
@@ -593,7 +807,8 @@ export default function App() {
                 <ImageViewer
                   imageUrl={
                     imagePaths[currentImageIndex]
-                      ? `${API_BASE_URL}/image-file?path=${encodeURIComponent(
+                      ? localImageUrls[imagePaths[currentImageIndex]] ??
+                        `${API_BASE_URL}/image-file?path=${encodeURIComponent(
                           imagePaths[currentImageIndex]
                         )}`
                       : ""
@@ -654,7 +869,6 @@ export default function App() {
                     onClick={handleLoadImages}
                     variant={imagesLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={connectionStatus !== "connected"}
                   >
                     <FolderOpen className="w-4 h-4" />
                     Загрузить изображения
@@ -664,7 +878,7 @@ export default function App() {
                     onClick={handleLoadGroundTruth}
                     variant={groundTruthLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!imagesLoaded || connectionStatus !== "connected"}
+                    disabled={!imagesLoaded}
                   >
                     <Target className="w-4 h-4" />
                     Загрузить Ground Truth
@@ -674,7 +888,7 @@ export default function App() {
                     onClick={handleLoadPredictions}
                     variant={predictionsLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!imagesLoaded || connectionStatus !== "connected"}
+                    disabled={!imagesLoaded}
                   >
                     <Brain className="w-4 h-4" />
                     Загрузить предсказания
@@ -687,8 +901,7 @@ export default function App() {
                     disabled={
                       !groundTruthLoaded ||
                       !predictionsLoaded ||
-                      metricsLoading ||
-                      connectionStatus !== "connected"
+                      metricsLoading
                     }
                   >
                     <BarChart3 className="w-4 h-4" />

@@ -5,6 +5,7 @@ import time
 import urllib.error
 import urllib.request
 import logging
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -58,7 +59,15 @@ def configure_logging() -> Path:
         ],
         force=True,
     )
+    sys.excepthook = log_uncaught_exception
     return log_file
+
+
+def log_uncaught_exception(exc_type, exc_value, exc_traceback) -> None:
+    logging.getLogger(__name__).critical(
+        "Uncaught Python exception",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
 
 
 def is_dev_mode() -> bool:
@@ -88,13 +97,20 @@ def run_api_server() -> None:
         sys.executable,
         getattr(sys, "frozen", False),
     )
-    uvicorn.run(
-        fastapi_app,
-        host=API_HOST,
-        port=API_PORT,
-        log_config=None,
-        access_log=False,
-    )
+    try:
+        uvicorn.run(
+            fastapi_app,
+            host=API_HOST,
+            port=API_PORT,
+            log_config=None,
+            access_log=False,
+        )
+    except Exception:
+        logging.getLogger(__name__).critical(
+            "VisionKit API server failed to start\n%s",
+            traceback.format_exc(),
+        )
+        raise
 
 
 class ApiServerHandle:
@@ -122,8 +138,18 @@ def start_embedded_api_server() -> Optional[ApiServerHandle]:
         access_log=False,
     )
     server = uvicorn.Server(config)
+    def run_server() -> None:
+        try:
+            server.run()
+        except Exception:
+            logger.critical(
+                "Embedded VisionKit API thread crashed\n%s",
+                traceback.format_exc(),
+            )
+            raise
+
     thread = threading.Thread(
-        target=server.run,
+        target=run_server,
         name="VisionKitApiServer",
         daemon=True,
     )

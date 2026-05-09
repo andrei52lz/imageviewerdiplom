@@ -65,4 +65,47 @@ export interface ApiHealth {
   pid: number;
   cwd: string;
   logFile: string | null;
+  lastError?: PythonLastError | null;
+}
+
+export interface PythonLastError {
+  source: string;
+  type: string;
+  message: string;
+  traceback: string;
+  timestamp: number;
+}
+
+export interface PythonDebugStatus {
+  status: "ok";
+  service: string;
+  backend: {
+    running: boolean;
+    pid: number;
+    cwd: string;
+    frozen: boolean;
+    logFile: string | null;
+  };
+  python: {
+    found: boolean;
+    executable: string;
+    version: string;
+    prefix: string;
+    basePrefix: string;
+    path: string[];
+    whichPython: string | null;
+    whichPy: string | null;
+  };
+  virtualEnvironment: {
+    active: boolean;
+    virtualEnv: string | null;
+    condaPrefix: string | null;
+  };
+  subprocess: {
+    mode: string;
+    enabled: boolean;
+    lastError: string | null;
+  };
+  imports: Record<string, boolean>;
+  lastError: PythonLastError | null;
 }

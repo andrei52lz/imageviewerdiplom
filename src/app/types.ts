@@ -55,3 +55,14 @@ export interface MetricsResult {
   fn: number;
   classMetrics: ClassMetric[];
 }
+
+export interface ApiHealth {
+  status: "ok";
+  service: string;
+  pythonExecutable: string;
+  pythonVersion: string;
+  frozen: boolean;
+  pid: number;
+  cwd: string;
+  logFile: string | null;
+}

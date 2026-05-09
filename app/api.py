@@ -1,3 +1,6 @@
+import logging
+import os
+import sys
 from pathlib import Path
 from tkinter import Tk, filedialog
 from typing import Optional
@@ -11,6 +14,7 @@ from .label_io import IMAGE_EXTENSIONS, box_to_dict, list_files, read_kitti_boxe
 from .schemas import CalculateMetricsRequest
 
 
+logger = logging.getLogger(__name__)
 api = FastAPI(title="VisionKit API")
 
 api.add_middleware(
@@ -25,6 +29,20 @@ api.add_middleware(
 @api.get("/ping")
 def ping():
     return {"message": "pong from VisionKit API"}
+
+
+@api.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "VisionKit API",
+        "pythonExecutable": sys.executable,
+        "pythonVersion": sys.version.split()[0],
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "pid": os.getpid(),
+        "cwd": str(Path.cwd()),
+        "logFile": os.getenv("VISIONKIT_LOG_FILE"),
+    }
 
 
 @api.get("/select-image-folder")
@@ -115,6 +133,7 @@ def ask_directory(title: str) -> Optional[Path]:
     root = None
 
     try:
+        logger.info("Opening directory picker: %s", title)
         root = Tk()
         root.withdraw()
         root.attributes("-topmost", True)
@@ -122,6 +141,7 @@ def ask_directory(title: str) -> Optional[Path]:
 
         folder_path = filedialog.askdirectory(parent=root, title=title)
     except Exception as exc:
+        logger.exception("Directory picker failed")
         raise HTTPException(
             status_code=500,
             detail=f"Directory picker failed: {exc}",
@@ -131,8 +151,10 @@ def ask_directory(title: str) -> Optional[Path]:
             root.destroy()
 
     if not folder_path:
+        logger.info("Directory picker cancelled: %s", title)
         return None
 
+    logger.info("Directory selected: %s", folder_path)
     return Path(folder_path)
 
 

@@ -6,7 +6,9 @@ import { SettingsSidebar } from "./components/SettingsSidebar";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { VisionKitIcon } from "./components/VisionKitIcon";
 import { Button } from "./components/ui/button";
+import { Badge } from "./components/ui/badge";
 import type {
+  ApiHealth,
   ApiBox,
   FolderSelectionResponse,
   LabelResponse,
@@ -22,11 +24,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Settings,
+  Server,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
 
 const API_BASE_URL = "http://127.0.0.1:8000";
+type ConnectionStatus = "checking" | "connected" | "disconnected";
 
 // Default class colors
 const DEFAULT_CLASS_COLORS: Record<string, string> = {
@@ -61,18 +65,53 @@ function mapApiBoxToUiBox(
   };
 }
 
-async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
+class ApiRequestError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+  }
+}
+
+async function readErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { detail?: string };
+    if (data.detail) {
+      return data.detail;
+    }
+  } catch {
+    // The response body is not JSON; use the HTTP status below.
+  }
+
+  return `Request failed with status ${response.status}`;
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "Неизвестная ошибка";
+}
+
+async function requestJson<T>(url: string, options?: RequestInit, retries = 8): Promise<T> {
   let lastError: unknown;
 
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  for (let attempt = 0; attempt < retries; attempt += 1) {
     try {
       const response = await fetch(url, options);
       if (!response.ok) {
-        throw new Error(`Request failed with status ${response.status}`);
+        throw new ApiRequestError(await readErrorMessage(response), response.status);
       }
 
       return response.json() as Promise<T>;
     } catch (error) {
+      if (error instanceof ApiRequestError) {
+        throw error;
+      }
+
       lastError = error;
       await new Promise((resolve) => window.setTimeout(resolve, 500));
     }
@@ -96,6 +135,11 @@ export default function App() {
   const [boundingBoxes, setBoundingBoxes] = useState<UiBoundingBox[]>([]);
   const [predictionFiles, setPredictionFiles] = useState<string[]>([]);
   const [metricsResult, setMetricsResult] = useState<MetricsResult | null>(null);
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("checking");
+  const [connectionMessage, setConnectionMessage] =
+    useState("Проверка Python API...");
+  const [apiHealth, setApiHealth] = useState<ApiHealth | null>(null);
 
   const [theme, setTheme] = useState<Theme>("dark");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -103,6 +147,38 @@ export default function App() {
   const [classColors, setClassColors] = useState<Record<string, string>>(
     DEFAULT_CLASS_COLORS
   );
+
+  const checkBackendConnection = async () => {
+    setConnectionStatus((status) => {
+      if (status !== "connected") {
+        setConnectionMessage("Проверка Python API...");
+        return "checking";
+      }
+      return status;
+    });
+
+    try {
+      const health = await requestJson<ApiHealth>(`${API_BASE_URL}/health`, undefined, 2);
+      setApiHealth(health);
+      setConnectionStatus("connected");
+      setConnectionMessage(
+        `Python ${health.pythonVersion} подключен, PID ${health.pid}`
+      );
+    } catch (error) {
+      setApiHealth(null);
+      setConnectionStatus("disconnected");
+      setConnectionMessage(`Python API недоступен: ${getErrorMessage(error)}`);
+    }
+  };
+
+  useEffect(() => {
+    void checkBackendConnection();
+    const timer = window.setInterval(() => {
+      void checkBackendConnection();
+    }, 10000);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const loadBoxesForCurrentImage = async () => {
@@ -233,7 +309,10 @@ export default function App() {
         description: `Найдено изображений: ${data.count}`,
       });
     } catch (error) {
-      toast.error("Ошибка подключения к Python");
+      await checkBackendConnection();
+      toast.error("Ошибка подключения к Python", {
+        description: getErrorMessage(error),
+      });
     }
   };
 
@@ -272,7 +351,9 @@ export default function App() {
         description: `Файлов аннотаций: ${data.count}`,
       });
     } catch (error) {
-      toast.error("Ошибка загрузки Ground Truth");
+      toast.error("Ошибка загрузки Ground Truth", {
+        description: getErrorMessage(error),
+      });
     }
   };
 
@@ -311,7 +392,9 @@ export default function App() {
         description: `Файлов предсказаний: ${data.count}`,
       });
     } catch (error) {
-      toast.error("Ошибка загрузки Predictions");
+      toast.error("Ошибка загрузки Predictions", {
+        description: getErrorMessage(error),
+      });
     }
   };
 
@@ -352,7 +435,9 @@ export default function App() {
     } catch (error) {
       setMetricsCalculated(false);
       setMetricsResult(null);
-      toast.error("Ошибка расчета метрик");
+      toast.error("Ошибка расчета метрик", {
+        description: getErrorMessage(error),
+      });
     } finally {
       setMetricsLoading(false);
     }
@@ -437,6 +522,34 @@ export default function App() {
                 объектов
               </p>
             </div>
+          </div>
+
+          <div className="flex flex-col items-end gap-2">
+            <Badge
+              variant={connectionStatus === "connected" ? "secondary" : "outline"}
+              className={
+                connectionStatus === "connected"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                  : connectionStatus === "checking"
+                    ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                    : "border-red-500/30 bg-red-500/10 text-red-400"
+              }
+              title={apiHealth?.logFile ? `Лог: ${apiHealth.logFile}` : connectionMessage}
+            >
+              <Server className="w-3 h-3" />
+              {connectionStatus === "connected"
+                ? "Python подключен"
+                : connectionStatus === "checking"
+                  ? "Проверка Python"
+                  : "Python недоступен"}
+            </Badge>
+            <span
+              className={`max-w-[360px] text-right text-xs ${
+                theme === "dark" ? "text-zinc-500" : "text-gray-500"
+              }`}
+            >
+              {connectionMessage}
+            </span>
           </div>
 
           <Button
@@ -541,6 +654,7 @@ export default function App() {
                     onClick={handleLoadImages}
                     variant={imagesLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
+                    disabled={connectionStatus !== "connected"}
                   >
                     <FolderOpen className="w-4 h-4" />
                     Загрузить изображения
@@ -550,7 +664,7 @@ export default function App() {
                     onClick={handleLoadGroundTruth}
                     variant={groundTruthLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!imagesLoaded}
+                    disabled={!imagesLoaded || connectionStatus !== "connected"}
                   >
                     <Target className="w-4 h-4" />
                     Загрузить Ground Truth
@@ -560,7 +674,7 @@ export default function App() {
                     onClick={handleLoadPredictions}
                     variant={predictionsLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!imagesLoaded}
+                    disabled={!imagesLoaded || connectionStatus !== "connected"}
                   >
                     <Brain className="w-4 h-4" />
                     Загрузить предсказания
@@ -570,7 +684,12 @@ export default function App() {
                     onClick={handleCalculateMetrics}
                     variant={metricsCalculated ? "secondary" : "default"}
                     className="flex items-center gap-2"
-                    disabled={!groundTruthLoaded || !predictionsLoaded || metricsLoading}
+                    disabled={
+                      !groundTruthLoaded ||
+                      !predictionsLoaded ||
+                      metricsLoading ||
+                      connectionStatus !== "connected"
+                    }
                   >
                     <BarChart3 className="w-4 h-4" />
                     {metricsLoading ? "Расчет метрик..." : "Рассчитать метрики"}

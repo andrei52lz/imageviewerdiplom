@@ -1,9 +1,10 @@
 import os
-import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,8 @@ API_HOST = "127.0.0.1"
 API_PORT = 8000
 API_URL = f"http://{API_HOST}:{API_PORT}"
 API_SERVER_ARG = "--api-server"
+LOG_DIR_NAME = "VisionKit"
+LOG_FILE_NAME = "visionkit.log"
 
 
 def resource_path(relative_path: str) -> Path:
@@ -29,6 +32,33 @@ def resource_path(relative_path: str) -> Path:
         base_dir = PROJECT_ROOT
 
     return (base_dir / relative_path).resolve()
+
+
+def get_log_file() -> Path:
+    base_dir = os.getenv("LOCALAPPDATA")
+    if base_dir:
+        log_dir = Path(base_dir) / LOG_DIR_NAME / "logs"
+    else:
+        log_dir = PROJECT_ROOT / "logs"
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / LOG_FILE_NAME
+
+
+def configure_logging() -> Path:
+    log_file = get_log_file()
+    os.environ["VISIONKIT_LOG_FILE"] = str(log_file)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stderr),
+        ],
+        force=True,
+    )
+    return log_file
 
 
 def is_dev_mode() -> bool:
@@ -51,6 +81,13 @@ def get_frontend_url():
 
 
 def run_api_server() -> None:
+    logging.getLogger(__name__).info(
+        "Starting VisionKit API on %s:%s with executable=%s frozen=%s",
+        API_HOST,
+        API_PORT,
+        sys.executable,
+        getattr(sys, "frozen", False),
+    )
     uvicorn.run(
         fastapi_app,
         host=API_HOST,
@@ -60,31 +97,52 @@ def run_api_server() -> None:
     )
 
 
-def start_api_process() -> Optional[subprocess.Popen]:
+class ApiServerHandle:
+    def __init__(self, server: uvicorn.Server, thread: threading.Thread):
+        self.server = server
+        self.thread = thread
+
+    def stop(self) -> None:
+        self.server.should_exit = True
+        self.thread.join(timeout=5)
+
+
+def start_embedded_api_server() -> Optional[ApiServerHandle]:
+    logger = logging.getLogger(__name__)
+
     if is_api_available():
+        logger.info("VisionKit API is already available at %s", API_URL)
         return None
 
-    if getattr(sys, "frozen", False):
-        command = [sys.executable, API_SERVER_ARG]
-    else:
-        command = [sys.executable, str(Path(__file__).resolve()), API_SERVER_ARG]
-
-    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    process = subprocess.Popen(
-        command,
-        creationflags=creation_flags,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    config = uvicorn.Config(
+        fastapi_app,
+        host=API_HOST,
+        port=API_PORT,
+        log_config=None,
+        access_log=False,
     )
+    server = uvicorn.Server(config)
+    thread = threading.Thread(
+        target=server.run,
+        name="VisionKitApiServer",
+        daemon=True,
+    )
+    thread.start()
+
     wait_for_api()
-    return process
+    if not is_api_available():
+        logger.error("VisionKit API did not become available at %s", API_URL)
+        raise RuntimeError(f"VisionKit API did not start. See log: {get_log_file()}")
+
+    logger.info("VisionKit API started in embedded thread")
+    return ApiServerHandle(server, thread)
 
 
 def is_api_available() -> bool:
     try:
-        with urllib.request.urlopen(f"{API_URL}/ping", timeout=1):
-            return True
-    except (urllib.error.URLError, TimeoutError):
+        with urllib.request.urlopen(f"{API_URL}/ping", timeout=1) as response:
+            return response.status == 200 and b"VisionKit API" in response.read()
+    except (urllib.error.URLError, TimeoutError, OSError):
         return False
 
 
@@ -97,11 +155,15 @@ def wait_for_api(timeout_seconds: float = 20.0) -> None:
 
 
 def main() -> None:
+    log_file = configure_logging()
+    logger = logging.getLogger(__name__)
+    logger.info("VisionKit started. log_file=%s", log_file)
+
     if API_SERVER_ARG in sys.argv:
         run_api_server()
         return
 
-    api_process = start_api_process()
+    api_server = start_embedded_api_server()
     from PySide6.QtGui import QIcon
     from PySide6.QtWebEngineWidgets import QWebEngineView
     from PySide6.QtWidgets import QApplication, QMainWindow
@@ -133,8 +195,9 @@ def main() -> None:
     try:
         exit_code = app.exec()
     finally:
-        if api_process and api_process.poll() is None:
-            api_process.terminate()
+        if api_server is not None:
+            api_server.stop()
+            logger.info("VisionKit API stopped")
 
     sys.exit(exit_code)
 

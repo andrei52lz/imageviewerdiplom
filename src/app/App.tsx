@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { ImageViewer } from "./components/ImageViewer";
 import { MetricsPanel } from "./components/MetricsPanel";
 import { LegendPanel } from "./components/LegendPanel";
@@ -33,7 +33,6 @@ import { Toaster } from "./components/ui/sonner";
 const API_BASE_URL = "http://127.0.0.1:8000";
 type ConnectionStatus = "checking" | "connected" | "disconnected";
 const REQUEST_TIMEOUT_MS = 10000;
-const IMAGE_EXTENSIONS = /\.(bmp|gif|jpe?g|png|webp)$/i;
 
 // Default class colors
 const DEFAULT_CLASS_COLORS: Record<string, string> = {
@@ -142,6 +141,34 @@ function classifyFetchError(error: unknown) {
   return getErrorMessage(error);
 }
 
+async function probeBackendReachability(baseUrl: string) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 2500);
+
+  try {
+    await fetch(`${baseUrl}/ping`, {
+      mode: "no-cors",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return "cors_error: backend port is reachable, but browser blocked the API response";
+  } catch (error) {
+    console.error("[VisionKit API] reachability probe failed", error);
+    if (error instanceof Error) {
+      console.error(error.message);
+      console.error(error.stack);
+    }
+
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return "timeout: backend did not answer on 127.0.0.1:8000";
+    }
+
+    return "backend not running or connection refused on 127.0.0.1:8000";
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function getErrorMessage(error: unknown) {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -199,6 +226,11 @@ async function requestJson<T>(url: string, options?: RequestInit, retries = 8): 
         durationMs,
         error,
       });
+      console.error(error);
+      if (error instanceof Error) {
+        console.error(error.message);
+        console.error(error.stack);
+      }
 
       if (error instanceof ApiRequestError) {
         throw error;
@@ -234,8 +266,6 @@ export default function App() {
   const [boundingBoxes, setBoundingBoxes] = useState<UiBoundingBox[]>([]);
   const [predictionFiles, setPredictionFiles] = useState<string[]>([]);
   const [metricsResult, setMetricsResult] = useState<MetricsResult | null>(null);
-  const [localImageUrls, setLocalImageUrls] = useState<Record<string, string>>({});
-  const [usingLocalImageFallback, setUsingLocalImageFallback] = useState(false);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("checking");
   const [connectionMessage, setConnectionMessage] =
@@ -246,16 +276,12 @@ export default function App() {
 
   const [theme, setTheme] = useState<Theme>("dark");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const localImageInputRef = useRef<HTMLInputElement | null>(null);
 
   const [classColors, setClassColors] = useState<Record<string, string>>(
     DEFAULT_CLASS_COLORS
   );
 
   const resetLoadedData = () => {
-    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
-    setLocalImageUrls({});
-    setUsingLocalImageFallback(false);
     setImagesLoaded(false);
     setGroundTruthLoaded(false);
     setPredictionsLoaded(false);
@@ -268,20 +294,6 @@ export default function App() {
     setCurrentImageIndex(0);
   };
 
-  useEffect(() => {
-    const input = localImageInputRef.current;
-    if (!input) {
-      return;
-    }
-
-    input.setAttribute("webkitdirectory", "");
-    input.setAttribute("directory", "");
-  }, []);
-
-  useEffect(() => () => {
-    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
-  }, [localImageUrls]);
-
   const checkBackendConnection = async () => {
     setConnectionStatus((status) => {
       if (status !== "connected") {
@@ -292,7 +304,7 @@ export default function App() {
     });
 
     try {
-      const health = await requestJson<ApiHealth>(`${API_BASE_URL}/health`, undefined, 2);
+      const health = await requestJson<ApiHealth>(`${API_BASE_URL}/api/health`, undefined, 2);
       const debug = await requestJson<PythonDebugStatus>(
         `${API_BASE_URL}/api/debug/python`,
         undefined,
@@ -305,10 +317,16 @@ export default function App() {
         `Python ${health.pythonVersion} подключен, PID ${health.pid}`
       );
     } catch (error) {
+      console.error("[VisionKit API] health-check failed", error);
+      if (error instanceof Error) {
+        console.error(error.message);
+        console.error(error.stack);
+      }
+      const diagnosis = await probeBackendReachability(API_BASE_URL);
       setApiHealth(null);
       setPythonDebugStatus(null);
       setConnectionStatus("disconnected");
-      setConnectionMessage(`Python API недоступен: ${getErrorMessage(error)}`);
+      setConnectionMessage(`Python API недоступен: ${diagnosis}`);
     }
   };
 
@@ -323,7 +341,7 @@ export default function App() {
 
   useEffect(() => {
     const loadBoxesForCurrentImage = async () => {
-      if (imagePaths.length === 0 || usingLocalImageFallback) {
+      if (imagePaths.length === 0) {
         setBoundingBoxes([]);
         return;
       }
@@ -379,7 +397,6 @@ export default function App() {
     groundTruthLoaded,
     predictionsLoaded,
     classColors,
-    usingLocalImageFallback,
   ]);
 
   // Keyboard navigation
@@ -407,45 +424,6 @@ export default function App() {
     })
   );
 
-  const handleLocalImageSelection = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-      .filter((file) => IMAGE_EXTENSIONS.test(file.name))
-      .sort((first, second) => first.name.localeCompare(second.name));
-
-    event.target.value = "";
-
-    if (files.length === 0) {
-      toast.info("Файлы изображений не выбраны");
-      return;
-    }
-
-    Object.values(localImageUrls).forEach(URL.revokeObjectURL);
-
-    const urls: Record<string, string> = {};
-    const paths = files.map((file, index) => {
-      const key = `local://${index}-${file.name}`;
-      urls[key] = URL.createObjectURL(file);
-      return key;
-    });
-
-    setLocalImageUrls(urls);
-    setUsingLocalImageFallback(true);
-    setImagePaths(paths);
-    setGroundTruthFiles([]);
-    setPredictionFiles([]);
-    setBoundingBoxes([]);
-    setCurrentImageIndex(0);
-    setImagesLoaded(true);
-    setGroundTruthLoaded(false);
-    setPredictionsLoaded(false);
-    setMetricsCalculated(false);
-    setMetricsResult(null);
-
-    toast.success("Изображения загружены локально", {
-      description: `Python API недоступен. Найдено изображений: ${files.length}`,
-    });
-  };
-
   const handleLoadImages = async () => {
     if (imagesLoaded) {
       resetLoadedData();
@@ -453,27 +431,20 @@ export default function App() {
       return;
     }
 
-    if (connectionStatus !== "connected") {
-      localImageInputRef.current?.click();
-      toast.info("Python API недоступен", {
-        description: "Открыта локальная загрузка изображений без расчета bbox/метрик",
-      });
-      return;
-    }
-
     try {
-      const data = await requestJson<FolderSelectionResponse>(
-        `${API_BASE_URL}/select-image-folder`
-      );
+      const res = await fetch("http://127.0.0.1:8000/select-image-folder");
+
+      if (!res.ok) {
+        throw new Error(`Backend returned ${res.status}`);
+      }
+
+      const data = (await res.json()) as FolderSelectionResponse;
 
       if (!data.count || data.count === 0) {
         toast.info("Папка не выбрана или не содержит изображений");
         return;
       }
 
-      Object.values(localImageUrls).forEach(URL.revokeObjectURL);
-      setLocalImageUrls({});
-      setUsingLocalImageFallback(false);
       setImagePaths(data.files);
       setGroundTruthFiles([]);
       setPredictionFiles([]);
@@ -490,10 +461,9 @@ export default function App() {
         description: `Найдено изображений: ${data.count}`,
       });
     } catch (error) {
-      await checkBackendConnection();
-      localImageInputRef.current?.click();
-      toast.error("Ошибка подключения к Python", {
-        description: `${getErrorMessage(error)}. Можно выбрать изображения локально без Python API.`,
+      console.error("select-image-folder error:", error);
+      toast.error("Ошибка выбора папки изображений", {
+        description: "Проверь, что backend запущен на http://127.0.0.1:8000",
       });
     }
   };
@@ -504,9 +474,9 @@ export default function App() {
       return;
     }
 
-    if (connectionStatus !== "connected" || usingLocalImageFallback) {
-      toast.error("Ground Truth требует Python API", {
-        description: "Сейчас доступна только локальная загрузка изображений без bbox/метрик",
+    if (connectionStatus !== "connected") {
+      toast.warning("Ground Truth требует Python API", {
+        description: "Проверьте статус подключения Python API",
       });
       return;
     }
@@ -552,9 +522,9 @@ export default function App() {
       return;
     }
 
-    if (connectionStatus !== "connected" || usingLocalImageFallback) {
-      toast.error("Predictions требуют Python API", {
-        description: "Сейчас доступна только локальная загрузка изображений без bbox/метрик",
+    if (connectionStatus !== "connected") {
+      toast.warning("Predictions требуют Python API", {
+        description: "Проверьте статус подключения Python API",
       });
       return;
     }
@@ -595,9 +565,9 @@ export default function App() {
   };
 
   const handleCalculateMetrics = async () => {
-    if (connectionStatus !== "connected" || usingLocalImageFallback) {
-      toast.error("Расчет метрик требует Python API", {
-        description: "Проверьте статус подключения и лог backend",
+    if (connectionStatus !== "connected") {
+      toast.warning("Расчет метрик требует Python API", {
+        description: "Проверьте статус Python API и лог backend",
       });
       return;
     }
@@ -685,14 +655,6 @@ export default function App() {
       }`}
     >
       <Toaster theme={theme} />
-      <input
-        ref={localImageInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={handleLocalImageSelection}
-      />
 
       {/* Settings Sidebar */}
       <SettingsSidebar
@@ -743,7 +705,7 @@ export default function App() {
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
                   : connectionStatus === "checking"
                     ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
-                    : "border-red-500/30 bg-red-500/10 text-red-400"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-400"
               }
               title={apiHealth?.logFile ? `Лог: ${apiHealth.logFile}` : connectionMessage}
             >
@@ -752,7 +714,7 @@ export default function App() {
                 ? "Python подключен"
                 : connectionStatus === "checking"
                   ? "Проверка Python"
-                  : "Python недоступен"}
+                  : "Python API offline"}
             </Badge>
             <span
               className={`max-w-[360px] text-right text-xs ${
@@ -807,8 +769,7 @@ export default function App() {
                 <ImageViewer
                   imageUrl={
                     imagePaths[currentImageIndex]
-                      ? localImageUrls[imagePaths[currentImageIndex]] ??
-                        `${API_BASE_URL}/image-file?path=${encodeURIComponent(
+                      ? `${API_BASE_URL}/image-file?path=${encodeURIComponent(
                           imagePaths[currentImageIndex]
                         )}`
                       : ""
@@ -871,7 +832,7 @@ export default function App() {
                     className="flex items-center gap-2"
                   >
                     <FolderOpen className="w-4 h-4" />
-                    Загрузить изображения
+                    {imagesLoaded ? "Выгрузить изображения" : "Выбрать папку изображений"}
                   </Button>
 
                   <Button

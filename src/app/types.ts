@@ -58,6 +58,8 @@ export interface MetricsResult {
 
 export interface ApiHealth {
   status: "ok";
+  python: boolean;
+  version: string;
   service: string;
   pythonExecutable: string;
   pythonVersion: string;

@@ -1,4 +1,5 @@
 import os
+import socket
 import sys
 import threading
 import time
@@ -14,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import uvicorn
-from app.api import api as fastapi_app
+from app.api import api as fastapi_app, set_directory_picker
 
 
 DEV_URL = "http://127.0.0.1:5173/"
@@ -24,6 +25,10 @@ API_URL = f"http://{API_HOST}:{API_PORT}"
 API_SERVER_ARG = "--api-server"
 LOG_DIR_NAME = "VisionKit"
 LOG_FILE_NAME = "visionkit.log"
+QTWEBENGINE_FLAGS = (
+    "--allow-file-access-from-files "
+    "--disable-features=BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights"
+)
 
 
 def resource_path(relative_path: str) -> Path:
@@ -63,6 +68,14 @@ def configure_logging() -> Path:
     return log_file
 
 
+def configure_webengine() -> None:
+    existing_flags = os.getenv("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+    if existing_flags:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{existing_flags} {QTWEBENGINE_FLAGS}"
+    else:
+        os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = QTWEBENGINE_FLAGS
+
+
 def log_uncaught_exception(exc_type, exc_value, exc_traceback) -> None:
     logging.getLogger(__name__).critical(
         "Uncaught Python exception",
@@ -86,7 +99,7 @@ def get_frontend_url():
             "Frontend build not found. Run 'npm run build' before production desktop launch."
         )
 
-    return QUrl.fromLocalFile(str(html_path))
+    return QUrl(f"{API_URL}/")
 
 
 def run_api_server() -> None:
@@ -130,6 +143,14 @@ def start_embedded_api_server() -> Optional[ApiServerHandle]:
         logger.info("VisionKit API is already available at %s", API_URL)
         return None
 
+    if is_tcp_port_open(API_HOST, API_PORT):
+        message = (
+            f"Port {API_PORT} is already in use, but it is not responding as VisionKit API. "
+            f"Close the process using {API_HOST}:{API_PORT} or change the API port."
+        )
+        logger.error(message)
+        raise RuntimeError(message)
+
     config = uvicorn.Config(
         fastapi_app,
         host=API_HOST,
@@ -164,6 +185,14 @@ def start_embedded_api_server() -> Optional[ApiServerHandle]:
     return ApiServerHandle(server, thread)
 
 
+def is_tcp_port_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def is_api_available() -> bool:
     try:
         with urllib.request.urlopen(f"{API_URL}/ping", timeout=1) as response:
@@ -180,7 +209,55 @@ def wait_for_api(timeout_seconds: float = 20.0) -> None:
         time.sleep(0.2)
 
 
+def create_directory_picker_bridge():
+    from PySide6.QtCore import QObject, Signal, Slot
+    from PySide6.QtWidgets import QFileDialog
+
+    class DirectoryPickerBridge(QObject):
+        request_directory = Signal(str, object)
+
+        def __init__(self):
+            super().__init__()
+            self.request_directory.connect(self._open_directory_dialog)
+
+        def pick_directory(self, title: str) -> Optional[Path]:
+            payload = {
+                "event": threading.Event(),
+                "result": None,
+                "error": None,
+            }
+
+            self.request_directory.emit(title, payload)
+
+            if not payload["event"].wait(timeout=300):
+                raise TimeoutError("Directory picker timed out")
+
+            if payload["error"] is not None:
+                raise payload["error"]
+
+            result = payload["result"]
+            return Path(result) if result else None
+
+        @Slot(str, object)
+        def _open_directory_dialog(self, title: str, payload: dict) -> None:
+            try:
+                folder = QFileDialog.getExistingDirectory(
+                    None,
+                    title,
+                    "",
+                    QFileDialog.Option.ShowDirsOnly,
+                )
+                payload["result"] = folder or None
+            except Exception as exc:
+                payload["error"] = exc
+            finally:
+                payload["event"].set()
+
+    return DirectoryPickerBridge()
+
+
 def main() -> None:
+    configure_webengine()
     log_file = configure_logging()
     logger = logging.getLogger(__name__)
     logger.info("VisionKit started. log_file=%s", log_file)
@@ -189,10 +266,31 @@ def main() -> None:
         run_api_server()
         return
 
-    api_server = start_embedded_api_server()
     from PySide6.QtGui import QIcon
     from PySide6.QtWebEngineWidgets import QWebEngineView
-    from PySide6.QtWidgets import QApplication, QMainWindow
+    from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+
+    app = QApplication(sys.argv)
+    directory_picker_bridge = create_directory_picker_bridge()
+    set_directory_picker(directory_picker_bridge.pick_directory)
+
+    try:
+        api_server = start_embedded_api_server()
+    except Exception as exc:
+        logger.critical(
+            "VisionKit backend startup failed\n%s",
+            traceback.format_exc(),
+        )
+        QMessageBox.critical(
+            None,
+            "VisionKit backend error",
+            (
+                "Не удалось запустить Python API на http://127.0.0.1:8000.\n\n"
+                f"{exc}\n\n"
+                f"Лог: {log_file}"
+            ),
+        )
+        sys.exit(1)
 
     class MainWindow(QMainWindow):
         def __init__(self):
@@ -208,8 +306,6 @@ def main() -> None:
             self.browser = QWebEngineView()
             self.browser.setUrl(get_frontend_url())
             self.setCentralWidget(self.browser)
-
-    app = QApplication(sys.argv)
 
     icon_path = resource_path("public/icon.ico")
     if icon_path.exists():

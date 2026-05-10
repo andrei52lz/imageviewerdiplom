@@ -95,7 +95,7 @@ export function AboutModal({ isOpen, onClose, theme, classColors }: AboutModalPr
             <VisionKitIcon size={34} className={isDark ? 'text-blue-400' : 'text-blue-600'} />
             <div>
               <h2 className={`text-lg font-semibold ${head}`}>VisionKit</h2>
-              <p className={`text-xs ${dim}`}>Версия 1.0.0 — прототип · 2025</p>
+              <p className={`text-xs ${dim}`}>Версия 1.0.2 — прототип · 2025</p>
             </div>
           </div>
           <button

@@ -6,11 +6,12 @@ import time
 import traceback
 from pathlib import Path
 from tkinter import Tk, filedialog
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .detection_metrics import calculate_detection_metrics
 from .label_io import IMAGE_EXTENSIONS, box_to_dict, list_files, read_kitti_boxes, read_yolo_boxes
@@ -20,6 +21,26 @@ from .schemas import CalculateMetricsRequest
 logger = logging.getLogger(__name__)
 api = FastAPI(title="VisionKit API")
 LAST_ERROR: dict[str, Any] | None = None
+DirectoryPicker = Callable[[str], Optional[Path]]
+DIRECTORY_PICKER: DirectoryPicker | None = None
+
+
+def set_directory_picker(picker: DirectoryPicker | None) -> None:
+    global DIRECTORY_PICKER
+    DIRECTORY_PICKER = picker
+
+
+def resource_path(relative_path: str) -> Path:
+    if getattr(sys, "frozen", False):
+        base_dir = Path(getattr(sys, "_MEIPASS"))
+    else:
+        base_dir = Path(__file__).resolve().parent.parent
+
+    return (base_dir / relative_path).resolve()
+
+
+DIST_DIR = resource_path("dist")
+INDEX_HTML = DIST_DIR / "index.html"
 
 api.add_middleware(
     CORSMiddleware,
@@ -169,6 +190,8 @@ def health():
     debug = get_python_debug_payload()
     return {
         "status": debug["status"],
+        "python": debug["python"]["found"],
+        "version": debug["python"]["version"],
         "service": debug["service"],
         "pythonExecutable": debug["python"]["executable"],
         "pythonVersion": debug["python"]["version"],
@@ -193,6 +216,32 @@ def api_status():
 @api.get("/api/debug/python")
 def debug_python():
     return get_python_debug_payload()
+
+
+@api.get("/")
+def frontend_index():
+    if not INDEX_HTML.exists():
+        raise HTTPException(status_code=404, detail="Frontend build not found")
+
+    return FileResponse(INDEX_HTML)
+
+
+@api.get("/logo.svg")
+def frontend_logo():
+    logo_path = DIST_DIR / "logo.svg"
+    if not logo_path.exists():
+        raise HTTPException(status_code=404, detail="Logo not found")
+
+    return FileResponse(logo_path)
+
+
+@api.get("/icon.ico")
+def frontend_icon():
+    icon_path = DIST_DIR / "icon.ico"
+    if not icon_path.exists():
+        raise HTTPException(status_code=404, detail="Icon not found")
+
+    return FileResponse(icon_path)
 
 
 @api.get("/select-image-folder")
@@ -280,6 +329,24 @@ def calculate_metrics(request: CalculateMetricsRequest):
 
 
 def ask_directory(title: str) -> Optional[Path]:
+    if DIRECTORY_PICKER is not None:
+        try:
+            logger.info("Opening directory picker through desktop bridge: %s", title)
+            folder = DIRECTORY_PICKER(title)
+        except Exception as exc:
+            logger.exception("Desktop directory picker failed")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Desktop directory picker failed: {exc}",
+            ) from exc
+
+        if folder is None:
+            logger.info("Desktop directory picker cancelled: %s", title)
+            return None
+
+        logger.info("Desktop directory selected: %s", folder)
+        return folder
+
     root = None
 
     try:
@@ -287,9 +354,15 @@ def ask_directory(title: str) -> Optional[Path]:
         root = Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        root.lift()
+        root.focus_force()
         root.update()
 
-        folder_path = filedialog.askdirectory(parent=root, title=title)
+        folder_path = filedialog.askdirectory(
+            parent=root,
+            title=title,
+            mustexist=True,
+        )
     except Exception as exc:
         logger.exception("Directory picker failed")
         raise HTTPException(
@@ -310,3 +383,10 @@ def ask_directory(title: str) -> Optional[Path]:
 
 def empty_folder_response():
     return {"count": 0, "files": [], "folder": None}
+
+
+if (DIST_DIR / "assets").exists():
+    api.mount("/assets", StaticFiles(directory=DIST_DIR / "assets"), name="frontend-assets")
+
+if (DIST_DIR / "Image").exists():
+    api.mount("/Image", StaticFiles(directory=DIST_DIR / "Image"), name="frontend-images")

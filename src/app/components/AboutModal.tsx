@@ -52,7 +52,7 @@ const STACK = [
   ['Платформа',    'Python 3.9+'],
   ['UI фреймворк', 'PySide6 / QWebEngineView'],
   ['Датасет',      'KITTI Object Detection Benchmark'],
-  ['Организация',  'Karlsruhe Institute of Technology (KIT) + Toyota Technological Institute (TTI)'],
+  ['Организация',  'Государственный научно-исследовательский институт авиационных систем (ГосНИИАС) + Колледж многоуровневого профессионального образования (КМПО) РАНХиГС'],
   ['Форматы',      'KITTI GT · YOLO Predictions · PNG · JPG'],
   ['Метрики',      'IoU ≥ 0.5, Precision, Recall, AP, mAP'],
 ];
@@ -95,7 +95,7 @@ export function AboutModal({ isOpen, onClose, theme, classColors }: AboutModalPr
             <VisionKitIcon size={34} className={isDark ? 'text-blue-400' : 'text-blue-600'} />
             <div>
               <h2 className={`text-lg font-semibold ${head}`}>VisionKit</h2>
-              <p className={`text-xs ${dim}`}>Версия 1.0.2 — прототип · 2025</p>
+              <p className={`text-xs ${dim}`}>Версия 1.1.4 — прототип · 2026</p>
             </div>
           </div>
           <button
@@ -247,7 +247,7 @@ export function AboutModal({ isOpen, onClose, theme, classColors }: AboutModalPr
         {/* ── Footer ── */}
         <div className={`px-6 py-4 border-t flex-shrink-0 ${div}`}>
           <p className={`text-xs text-center ${dim}`}>
-            VisionKit · Инструмент визуализации детекции объектов · 2025
+            VisionKit · Инструмент визуализации детекции объектов · 2026
           </p>
         </div>
       </div>

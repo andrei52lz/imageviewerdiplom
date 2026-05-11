@@ -23,11 +23,17 @@ api = FastAPI(title="VisionKit API")
 LAST_ERROR: dict[str, Any] | None = None
 DirectoryPicker = Callable[[str], Optional[Path]]
 DIRECTORY_PICKER: DirectoryPicker | None = None
+APP_EXIT_CALLBACK: Callable[[], None] | None = None
 
 
 def set_directory_picker(picker: DirectoryPicker | None) -> None:
     global DIRECTORY_PICKER
     DIRECTORY_PICKER = picker
+
+
+def set_app_exit_callback(callback: Callable[[], None] | None) -> None:
+    global APP_EXIT_CALLBACK
+    APP_EXIT_CALLBACK = callback
 
 
 def resource_path(relative_path: str) -> Path:
@@ -218,6 +224,15 @@ def debug_python():
     return get_python_debug_payload()
 
 
+@api.post("/app/exit")
+def exit_application():
+    if APP_EXIT_CALLBACK is None:
+        return {"status": "ignored", "message": "Desktop exit callback is not registered"}
+
+    APP_EXIT_CALLBACK()
+    return {"status": "closing"}
+
+
 @api.get("/")
 def frontend_index():
     if not INDEX_HTML.exists():
@@ -245,7 +260,7 @@ def frontend_icon():
 
 
 @api.get("/select-image-folder")
-async def select_image_folder():
+def select_image_folder():
     folder = ask_directory("Выберите папку с изображениями")
     if folder is None:
         return empty_folder_response()
@@ -268,7 +283,7 @@ def image_file(path: str):
 
 
 @api.get("/select-gt-folder")
-async def select_gt_folder():
+def select_gt_folder():
     folder = ask_directory("Выберите папку с Ground Truth")
     if folder is None:
         return empty_folder_response()
@@ -293,7 +308,7 @@ def read_kitti_label(path: str):
 
 
 @api.get("/select-pred-folder")
-async def select_pred_folder():
+def select_pred_folder():
     folder = ask_directory("Выберите папку с Predictions")
     if folder is None:
         return empty_folder_response()

@@ -6,7 +6,6 @@ import { SettingsSidebar } from "./components/SettingsSidebar";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { VisionKitIcon } from "./components/VisionKitIcon";
 import { Button } from "./components/ui/button";
-import { Badge } from "./components/ui/badge";
 import type {
   ApiHealth,
   ApiBox,
@@ -25,7 +24,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Settings,
-  Server,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Toaster } from "./components/ui/sonner";
@@ -259,6 +257,7 @@ export default function App() {
   const [groundTruthLoaded, setGroundTruthLoaded] = useState(false);
   const [predictionsLoaded, setPredictionsLoaded] = useState(false);
   const [metricsCalculated, setMetricsCalculated] = useState(false);
+  const [imageFolderLoading, setImageFolderLoading] = useState(false);
   const [metricsLoading, setMetricsLoading] = useState(false);
 
   const [imagePaths, setImagePaths] = useState<string[]>([]);
@@ -425,6 +424,10 @@ export default function App() {
   );
 
   const handleLoadImages = async () => {
+    if (imageFolderLoading) {
+      return;
+    }
+
     if (imagesLoaded) {
       resetLoadedData();
       toast.info("Изображения выгружены");
@@ -432,6 +435,9 @@ export default function App() {
     }
 
     try {
+      setImageFolderLoading(true);
+      toast.info("Открывается выбор папки изображений");
+
       const res = await fetch("http://127.0.0.1:8000/select-image-folder");
 
       if (!res.ok) {
@@ -465,6 +471,8 @@ export default function App() {
       toast.error("Ошибка выбора папки изображений", {
         description: "Проверь, что backend запущен на http://127.0.0.1:8000",
       });
+    } finally {
+      setImageFolderLoading(false);
     }
   };
 
@@ -636,6 +644,15 @@ export default function App() {
     );
   };
 
+  const handleExitApplication = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/app/exit`, { method: "POST" });
+    } catch (error) {
+      console.error("app exit error:", error);
+      window.close();
+    }
+  };
+
   // Show welcome screen if not dismissed
   if (showWelcome) {
     return (
@@ -664,10 +681,7 @@ export default function App() {
         onThemeChange={setTheme}
         classColors={classColors}
         onClassColorsChange={setClassColors}
-        onExitToWelcome={() => {
-          setShowWelcome(true);
-          setSettingsOpen(false);
-        }}
+        onExitApplication={handleExitApplication}
       />
 
       {/* Header */}
@@ -695,37 +709,6 @@ export default function App() {
                 объектов
               </p>
             </div>
-          </div>
-
-          <div className="flex flex-col items-end gap-2">
-            <Badge
-              variant={connectionStatus === "connected" ? "secondary" : "outline"}
-              className={
-                connectionStatus === "connected"
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                  : connectionStatus === "checking"
-                    ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
-                    : "border-amber-500/30 bg-amber-500/10 text-amber-400"
-              }
-              title={apiHealth?.logFile ? `Лог: ${apiHealth.logFile}` : connectionMessage}
-            >
-              <Server className="w-3 h-3" />
-              {connectionStatus === "connected"
-                ? "Python подключен"
-                : connectionStatus === "checking"
-                  ? "Проверка Python"
-                  : "Python API offline"}
-            </Badge>
-            <span
-              className={`max-w-[360px] text-right text-xs ${
-                theme === "dark" ? "text-zinc-500" : "text-gray-500"
-              }`}
-            >
-              {connectionMessage}
-              {pythonDebugStatus?.lastError
-                ? ` Последняя ошибка: ${pythonDebugStatus.lastError.type}`
-                : ""}
-            </span>
           </div>
 
           <Button
@@ -830,9 +813,14 @@ export default function App() {
                     onClick={handleLoadImages}
                     variant={imagesLoaded ? "secondary" : "default"}
                     className="flex items-center gap-2"
+                    disabled={imageFolderLoading}
                   >
                     <FolderOpen className="w-4 h-4" />
-                    {imagesLoaded ? "Выгрузить изображения" : "Выбрать папку изображений"}
+                    {imageFolderLoading
+                      ? "Открытие папки..."
+                      : imagesLoaded
+                        ? "Выгрузить изображения"
+                        : "Загрузить изображения"}
                   </Button>
 
                   <Button

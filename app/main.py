@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import uvicorn
-from app.api import api as fastapi_app, set_directory_picker
+from app.api import api as fastapi_app, set_app_exit_callback, set_directory_picker
 
 
 DEV_URL = "http://127.0.0.1:5173/"
@@ -211,38 +211,49 @@ def wait_for_api(timeout_seconds: float = 20.0) -> None:
 
 def create_directory_picker_bridge():
     from PySide6.QtCore import QObject, Signal, Slot
-    from PySide6.QtWidgets import QFileDialog
+    from PySide6.QtWidgets import QApplication, QFileDialog
 
     class DirectoryPickerBridge(QObject):
         request_directory = Signal(str, object)
 
         def __init__(self):
             super().__init__()
+            self._dialog_lock = threading.Lock()
+            self._parent_window = None
             self.request_directory.connect(self._open_directory_dialog)
 
+        def set_parent_window(self, window) -> None:
+            self._parent_window = window
+
         def pick_directory(self, title: str) -> Optional[Path]:
-            payload = {
-                "event": threading.Event(),
-                "result": None,
-                "error": None,
-            }
+            with self._dialog_lock:
+                payload = {
+                    "event": threading.Event(),
+                    "result": None,
+                    "error": None,
+                }
 
-            self.request_directory.emit(title, payload)
+                self.request_directory.emit(title, payload)
 
-            if not payload["event"].wait(timeout=300):
-                raise TimeoutError("Directory picker timed out")
+                if not payload["event"].wait(timeout=300):
+                    raise TimeoutError("Directory picker timed out")
 
-            if payload["error"] is not None:
-                raise payload["error"]
+                if payload["error"] is not None:
+                    raise payload["error"]
 
-            result = payload["result"]
-            return Path(result) if result else None
+                result = payload["result"]
+                return Path(result) if result else None
 
         @Slot(str, object)
         def _open_directory_dialog(self, title: str, payload: dict) -> None:
             try:
+                parent = self._parent_window or QApplication.activeWindow()
+                if parent is not None:
+                    parent.raise_()
+                    parent.activateWindow()
+
                 folder = QFileDialog.getExistingDirectory(
-                    None,
+                    parent,
                     title,
                     "",
                     QFileDialog.Option.ShowDirsOnly,
@@ -254,6 +265,22 @@ def create_directory_picker_bridge():
                 payload["event"].set()
 
     return DirectoryPickerBridge()
+
+
+def create_app_exit_bridge(app):
+    from PySide6.QtCore import QObject, Signal
+
+    class AppExitBridge(QObject):
+        request_exit = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self.request_exit.connect(app.quit)
+
+        def exit_application(self) -> None:
+            self.request_exit.emit()
+
+    return AppExitBridge()
 
 
 def main() -> None:
@@ -272,7 +299,9 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     directory_picker_bridge = create_directory_picker_bridge()
+    app_exit_bridge = create_app_exit_bridge(app)
     set_directory_picker(directory_picker_bridge.pick_directory)
+    set_app_exit_callback(app_exit_bridge.exit_application)
 
     try:
         api_server = start_embedded_api_server()
@@ -312,11 +341,14 @@ def main() -> None:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
+    directory_picker_bridge.set_parent_window(window)
     window.showMaximized()
 
     try:
         exit_code = app.exec()
     finally:
+        set_app_exit_callback(None)
+        set_directory_picker(None)
         if api_server is not None:
             api_server.stop()
             logger.info("VisionKit API stopped")

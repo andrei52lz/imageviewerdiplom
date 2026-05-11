@@ -14,7 +14,7 @@ interface SettingsSidebarProps {
   onThemeChange: (theme: 'light' | 'dark') => void;
   classColors: Record<string, string>;
   onClassColorsChange: (colors: Record<string, string>) => void;
-  onExitToWelcome: () => void;
+  onExitApplication: () => void;
 }
 
 export function SettingsSidebar({ 
@@ -24,7 +24,7 @@ export function SettingsSidebar({
   onThemeChange,
   classColors,
   onClassColorsChange,
-  onExitToWelcome 
+  onExitApplication
 }: SettingsSidebarProps) {
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -161,7 +161,7 @@ export function SettingsSidebar({
           <Button
             variant={theme === 'dark' ? 'outline' : 'outline'}
             className="w-full flex items-center justify-center gap-2"
-            onClick={onExitToWelcome}
+            onClick={onExitApplication}
           >
             <LogOut className="w-4 h-4" />
             Выход

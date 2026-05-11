@@ -241,8 +241,45 @@ VisionKit.exe
 ### Что находится в GitHub Release
 
 - `VisionKit-1.1.4-windows.zip` - готовое Windows-приложение. Именно этот архив нужен пользователю для запуска VisionKit.
+- `VisionKit-sample-images.zip` - тестовый набор изображений для проверки работы приложения.
+- `VisionKit-sample-ground-truth.zip` - тестовая KITTI-разметка для этих изображений.
+- `VisionKit-sample-predictions.zip` - тестовая YOLO-разметка, полученная моделью детекции.
 - `Source code (zip)` - исходный код проекта в формате ZIP. Нужен разработчикам, а не для обычного запуска.
 - `Source code (tar.gz)` - тот же исходный код в формате TAR.GZ. Обычно используется в Linux/macOS или автоматических сборках.
+
+Тестовые архивы содержат 250 согласованных кадров. Имена изображений, Ground Truth и Predictions совпадают по stem, поэтому их можно сразу использовать для проверки отображения bbox и расчета метрик.
+
+### Быстрая проверка на тестовых данных
+
+1. Скачайте и распакуйте `VisionKit-1.1.4-windows.zip`.
+2. Скачайте и распакуйте тестовые архивы:
+
+```text
+VisionKit-sample-images.zip
+VisionKit-sample-ground-truth.zip
+VisionKit-sample-predictions.zip
+```
+
+3. Запустите `VisionKit.exe`.
+4. Нажмите `Загрузить изображения` и выберите папку:
+
+```text
+data_object_image_2\training\image_2
+```
+
+5. Нажмите `Загрузить Ground Truth` и выберите папку:
+
+```text
+data_object_label_2\training\label_2
+```
+
+6. Нажмите `Загрузить предсказания` и выберите папку:
+
+```text
+predict-2\labels
+```
+
+7. Нажмите `Рассчитать метрики`.
 
 ### Порядок работы пользователя
 
